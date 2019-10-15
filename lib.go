@@ -523,9 +523,9 @@ func fillCellDataFromInlineString(rawcell xlsxC, cell *Cell) {
 // rows from a XSLXWorksheet, populates them with Cells and resolves
 // the value references from the reference table and stores them in
 // the rows and columns.
-func readRowsFromSheet(Worksheet *xlsxWorksheet, file *File, sheet *Sheet, rowLimit int) ([]*Row, []*Col, int, int) {
+func readRowsFromSheet(Worksheet *xlsxWorksheet, file *File, sheet *Sheet, rowLimit int) ([]*Row, *ColStore, int, int) {
 	var rows []*Row
-	var cols []*Col
+	var cols *ColStore
 	var row *Row
 	var minCol, maxCol, maxRow, colCount, rowCount int
 	var reftable *RefTable
@@ -549,34 +549,28 @@ func readRowsFromSheet(Worksheet *xlsxWorksheet, file *File, sheet *Sheet, rowLi
 	rowCount = maxRow + 1
 	colCount = maxCol + 1
 	rows = make([]*Row, rowCount)
-	cols = make([]*Col, colCount)
-	for i := range cols {
-		cols[i] = &Col{
-			Hidden: false,
-		}
-	}
+	cols = &ColStore{}
 
 	if Worksheet.Cols != nil {
 		// Columns can apply to a range, for convenience we expand the
 		// ranges out into individual column definitions.
 		for _, rawcol := range Worksheet.Cols.Col {
-			// Note, below, that sometimes column definitions can
-			// exist outside the defined dimensions of the
-			// spreadsheet - we deliberately exclude these
-			// columns.
-			for i := rawcol.Min; i <= rawcol.Max && i <= colCount; i++ {
-				col := &Col{
-					Min:          rawcol.Min,
-					Max:          rawcol.Max,
-					Hidden:       rawcol.Hidden,
-					Width:        rawcol.Width,
-					OutlineLevel: rawcol.OutlineLevel}
-				cols[i-1] = col
-				if file.styles != nil {
-					col.style = file.styles.getStyle(rawcol.Style)
-					col.numFmt, col.parsedNumFmt = file.styles.getNumberFormat(rawcol.Style)
-				}
+			col := &Col{
+				Min:          rawcol.Min,
+				Max:          rawcol.Max,
+				Hidden:       rawcol.Hidden,
+				Width:        rawcol.Width,
+				OutlineLevel: rawcol.OutlineLevel,
+				BestFit:      rawcol.BestFit,
+				CustomWidth:  rawcol.CustomWidth,
+				Phonetic:     rawcol.Phonetic,
+				Collapsed:    rawcol.Collapsed,
 			}
+			if file.styles != nil {
+				col.style = file.styles.getStyle(rawcol.Style)
+				col.numFmt, col.parsedNumFmt = file.styles.getNumberFormat(rawcol.Style)
+			}
+			cols.Add(col)
 		}
 	}
 
@@ -640,7 +634,9 @@ func readRowsFromSheet(Worksheet *xlsxWorksheet, file *File, sheet *Sheet, rowLi
 				}
 				cell.date1904 = file.Date1904
 				// Cell is considered hidden if the row or the column of this cell is hidden
-				cell.Hidden = rawrow.Hidden || (len(cols) > cellX && cols[cellX].Hidden)
+				//
+				col := cols.FindColByIndex(cellX + 1)
+				cell.Hidden = rawrow.Hidden || (col != nil && col.Hidden)
 				insertColIndex++
 			}
 		}
@@ -717,97 +713,13 @@ func readSheetFromFile(sc chan *indexedSheet, index int, rsheet xlsxSheet, fi *F
 	sheet.Hidden = rsheet.State == sheetStateHidden || rsheet.State == sheetStateVeryHidden
 	sheet.SheetViews = readSheetViews(worksheet.SheetViews)
 
-	// Convert xlsxHyperlinks to Hyperlinks
-	if worksheet.Hyperlinks != nil {
-
-		worksheetRelsFile := fi.worksheetRels["sheet"+rsheet.SheetId]
-		worksheetRels := new(xlsxWorksheetRels)
-		rc, err := worksheetRelsFile.Open()
-		if err != nil {
-			return err
-		}
-		decoder := xml.NewDecoder(rc)
-		err = decoder.Decode(worksheetRels)
-		if err != nil {
-			return err
-		}
-
-		for _, xlsxLink := range worksheet.Hyperlinks.HyperLinks {
-			newHyperLink := Hyperlink{}
-
-			relationPresent := false
-			for _, rel := range worksheetRels.Relationships {
-				if rel.Id == xlsxLink.RelationshipId {
-					newHyperLink.Link = rel.Target
-					relationPresent = true
-					break
-				}
-			}
-			if !relationPresent {
-				return errors.New("sheets relations file has no relations for the relation id present in the hyperlink")
-			}
-
-			if xlsxLink.Tooltip != "" {
-				newHyperLink.Tooltip = xlsxLink.Tooltip
-			}
-			if xlsxLink.DisplayString != "" {
-				newHyperLink.DisplayString = xlsxLink.DisplayString
-			}
-			cellRef := xlsxLink.Reference
-			x, y, err := GetCoordsFromCellIDString(cellRef)
-			if err != nil {
-				return err
-			}
-			cell := sheet.Row(y).Cells[x]
-			cell.Hyperlink = newHyperLink
-		}
-	}
-
 	sheet.SheetFormat.DefaultColWidth = worksheet.SheetFormatPr.DefaultColWidth
 	sheet.SheetFormat.DefaultRowHeight = worksheet.SheetFormatPr.DefaultRowHeight
 	sheet.SheetFormat.OutlineLevelCol = worksheet.SheetFormatPr.OutlineLevelCol
 	sheet.SheetFormat.OutlineLevelRow = worksheet.SheetFormatPr.OutlineLevelRow
 	if nil != worksheet.DataValidations {
 		for _, dd := range worksheet.DataValidations.DataValidation {
-			sqrefArr := strings.Split(dd.Sqref, " ")
-			for _, sqref := range sqrefArr {
-				parts := strings.Split(sqref, cellRangeChar)
-
-				minCol, minRow, err := GetCoordsFromCellIDString(parts[0])
-				if nil != err {
-					return fmt.Errorf("data validation %s", err.Error())
-				}
-
-				if 2 == len(parts) {
-					maxCol, maxRow, err := GetCoordsFromCellIDString(parts[1])
-					if nil != err {
-						return fmt.Errorf("data validation %s", err.Error())
-					}
-
-					if minCol == maxCol && minRow == maxRow {
-						newDD := new(xlsxCellDataValidation)
-						*newDD = *dd
-						newDD.Sqref = ""
-						sheet.Cell(minRow, minCol).SetDataValidation(newDD)
-					} else {
-						// one col mutli dd , error todo
-						for i := minCol; i <= maxCol; i++ {
-							newDD := new(xlsxCellDataValidation)
-							*newDD = *dd
-							newDD.Sqref = ""
-							sheet.Col(i).SetDataValidation(dd, minRow, maxRow)
-						}
-
-					}
-				} else {
-					newDD := new(xlsxCellDataValidation)
-					*newDD = *dd
-					newDD.Sqref = ""
-					sheet.Cell(minRow, minCol).SetDataValidation(dd)
-
-				}
-			}
-
+			sheet.AddDataValidation(dd)
 		}
 
 	}
@@ -1064,12 +976,10 @@ func ReadZipReaderWithRowLimit(r *zip.Reader, rowLimit int) (*File, error) {
 	var workbook *zip.File
 	var workbookRels *zip.File
 	var worksheets map[string]*zip.File
-	var worksheetRels map[string]*zip.File
 
 	file = NewFile()
 	// file.numFmtRefTable = make(map[int]xlsxNumFmt, 1)
 	worksheets = make(map[string]*zip.File, len(r.File))
-	worksheetRels = make(map[string]*zip.File, len(r.File))
 	for _, v = range r.File {
 		switch v.Name {
 		case "xl/sharedStrings.xml":
@@ -1085,11 +995,7 @@ func ReadZipReaderWithRowLimit(r *zip.Reader, rowLimit int) (*File, error) {
 		default:
 			if len(v.Name) > 17 {
 				if v.Name[0:13] == "xl/worksheets" {
-					if v.Name[len(v.Name)-5:] == ".rels" {
-						worksheetRels[v.Name[20:len(v.Name)-9]] = v
-					} else {
-						worksheets[v.Name[14:len(v.Name)-4]] = v
-					}
+					worksheets[v.Name[14:len(v.Name)-4]] = v
 				}
 			}
 		}
@@ -1105,7 +1011,6 @@ func ReadZipReaderWithRowLimit(r *zip.Reader, rowLimit int) (*File, error) {
 		return nil, fmt.Errorf("Input xlsx contains no worksheets.")
 	}
 	file.worksheets = worksheets
-	file.worksheetRels = worksheetRels
 	reftable, err = readSharedStringsFromZipFile(sharedStrings)
 	if err != nil {
 		return nil, err

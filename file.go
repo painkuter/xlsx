@@ -17,7 +17,6 @@ import (
 // to the user.
 type File struct {
 	worksheets     map[string]*zip.File
-	worksheetRels  map[string]*zip.File
 	referenceTable *RefTable
 	Date1904       bool
 	styles         *xlsxStyleSheet
@@ -151,15 +150,17 @@ func (f *File) Write(writer io.Writer) (err error) {
 	return zipWriter.Close()
 }
 
-// Add a new Sheet, with the provided name, to a File.
+// AddSheet Add a new Sheet, with the provided name, to a File.
+// The minimum sheet name length is 1 character. If the sheet name length is less an error is thrown.
 // The maximum sheet name length is 31 characters. If the sheet name length is exceeded an error is thrown.
 // These special characters are also not allowed: : \ / ? * [ ]
 func (f *File) AddSheet(sheetName string) (*Sheet, error) {
 	if _, exists := f.Sheet[sheetName]; exists {
 		return nil, fmt.Errorf("duplicate sheet name '%s'.", sheetName)
 	}
-	if utf8.RuneCountInString(sheetName) > 31 {
-		return nil, fmt.Errorf("sheet name must be 31 or fewer characters long.  It is currently '%d' characters long", utf8.RuneCountInString(sheetName))
+	runeLength := utf8.RuneCountInString(sheetName)
+	if runeLength > 31 || runeLength == 0 {
+		return nil, fmt.Errorf("sheet name must be 31 or fewer characters long.  It is currently '%d' characters long", runeLength)
 	}
 	// Iterate over the runes
 	for _, r := range sheetName {
@@ -172,6 +173,7 @@ func (f *File) AddSheet(sheetName string) (*Sheet, error) {
 		Name:     sheetName,
 		File:     f,
 		Selected: len(f.Sheets) == 0,
+		Cols:     &ColStore{},
 	}
 	f.Sheet[sheetName] = sheet
 	f.Sheets = append(f.Sheets, sheet)
@@ -237,17 +239,6 @@ func replaceRelationshipsNameSpace(workbookMarshal string) string {
 	return strings.Replace(newWorkbook, oldXmlns, newXmlns, 1)
 }
 
-func addRelationshipNameSpaceToWorksheet(worksheetMarshal string) string {
-	oldXmlns := `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">`
-	newXmlns := `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">`
-	newSheetMarshall := strings.Replace(worksheetMarshal, oldXmlns, newXmlns, 1)
-
-	oldHyperlink := `<hyperlink id=`
-	newHyperlink := `<hyperlink r:id=`
-	newSheetMarshall = strings.Replace(newSheetMarshall, oldHyperlink, newHyperlink, -1)
-	return newSheetMarshall
-}
-
 // Construct a map of file name to XML content representing the file
 // in terms of the structure of an XLSX file.
 func (f *File) MarshallParts() (map[string]string, error) {
@@ -280,16 +271,11 @@ func (f *File) MarshallParts() (map[string]string, error) {
 		return nil, err
 	}
 	for _, sheet := range f.Sheets {
-		xSheetRels := sheet.makeXLSXSheetRelations()
-		xSheet, err := sheet.makeXLSXSheet(refTable, f.styles, xSheetRels)
-		if err != nil {
-			return nil, err
-		}
+		xSheet := sheet.makeXLSXSheet(refTable, f.styles)
 		rId := fmt.Sprintf("rId%d", sheetIndex)
 		sheetId := strconv.Itoa(sheetIndex)
 		sheetPath := fmt.Sprintf("worksheets/sheet%d.xml", sheetIndex)
 		partName := "xl/" + sheetPath
-		relPartName := fmt.Sprintf("xl/worksheets/_rels/sheet%d.xml.rels", sheetIndex)
 		types.Overrides = append(
 			types.Overrides,
 			xlsxOverride{
@@ -301,18 +287,9 @@ func (f *File) MarshallParts() (map[string]string, error) {
 			SheetId: sheetId,
 			Id:      rId,
 			State:   "visible"}
-
-		worksheetMarshal, err := marshal(xSheet)
+		parts[partName], err = marshal(xSheet)
 		if err != nil {
 			return parts, err
-		}
-		worksheetMarshal = addRelationshipNameSpaceToWorksheet(worksheetMarshal)
-		parts[partName] = worksheetMarshal
-		if xSheetRels != nil {
-			parts[relPartName], err = marshal(xSheetRels)
-			if err != nil {
-				return parts, err
-			}
 		}
 		sheetIndex++
 	}
@@ -323,6 +300,9 @@ func (f *File) MarshallParts() (map[string]string, error) {
 	}
 	workbookMarshal = replaceRelationshipsNameSpace(workbookMarshal)
 	parts["xl/workbook.xml"] = workbookMarshal
+	if err != nil {
+		return parts, err
+	}
 
 	parts["_rels/.rels"] = TEMPLATE__RELS_DOT_RELS
 	parts["docProps/app.xml"] = TEMPLATE_DOCPROPS_APP

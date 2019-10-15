@@ -39,6 +39,19 @@ func (ct CellType) Ptr() *CellType {
 	return &ct
 }
 
+func (ct *CellType) fallbackTo(cellData string, fallback CellType) CellType {
+	if ct != nil {
+		switch *ct {
+		case CellTypeNumeric:
+			if _, err := strconv.ParseFloat(cellData, 64); err == nil {
+				return *ct
+			}
+		default:
+		}
+	}
+	return fallback
+}
+
 // Cell is a high level structure intended to provide user access to
 // the contents of Cell within an xlsx.Row.
 type Cell struct {
@@ -53,14 +66,7 @@ type Cell struct {
 	HMerge         int
 	VMerge         int
 	cellType       CellType
-	DataValidation *xlsxCellDataValidation
-	Hyperlink      Hyperlink
-}
-
-type Hyperlink struct {
-	DisplayString string
-	Link          string
-	Tooltip       string
+	DataValidation *xlsxDataValidation
 }
 
 // CellInterface defines the public API of the Cell.
@@ -236,23 +242,6 @@ func (c *Cell) SetInt(n int) {
 	c.SetValue(n)
 }
 
-// SetHyperlink sets this cell to contain the given hyperlink, displayText and tooltip.
-// If the displayText or tooltip are an empty string, they will not be set.
-// The hyperlink provided must be a valid URL starting with http:// or https:// or
-// excel will not recognize it as an external link.
-func (c *Cell) SetHyperlink(hyperlink string, displayText string, tooltip string) {
-	c.Hyperlink = Hyperlink{Link: hyperlink}
-	c.SetString(hyperlink)
-	c.Row.Sheet.addRelation(RelationshipTypeHyperlink, hyperlink, RelationshipTargetModeExternal)
-	if displayText != "" {
-		c.Hyperlink.DisplayString = displayText
-		c.SetString(displayText)
-	}
-	if tooltip != "" {
-		c.Hyperlink.Tooltip = tooltip
-	}
-}
-
 // SetInt sets a cell's value to an integer.
 func (c *Cell) SetValue(n interface{}) {
 	switch t := n.(type) {
@@ -399,6 +388,31 @@ func (c *Cell) FormattedValue() (string, error) {
 }
 
 // SetDataValidation set data validation
-func (c *Cell) SetDataValidation(dd *xlsxCellDataValidation) {
+func (c *Cell) SetDataValidation(dd *xlsxDataValidation) {
 	c.DataValidation = dd
+}
+
+// StreamingCellMetadata represents anything attributable to a cell
+// except for the cell data itself. For example, it is used
+// in StreamFileBuilder.AddSheetWithDefaultColumnMetadata to
+// associate default attributes for cells in a particular column
+type StreamingCellMetadata struct {
+	cellType    CellType
+	streamStyle StreamStyle
+}
+
+var (
+	DefaultStringStreamingCellMetadata  StreamingCellMetadata
+	DefaultNumericStreamingCellMetadata StreamingCellMetadata
+	DefaultDecimalStreamingCellMetadata StreamingCellMetadata
+	DefaultIntegerStreamingCellMetadata StreamingCellMetadata
+	DefaultDateStreamingCellMetadata    StreamingCellMetadata
+)
+
+func MakeStreamingCellMetadata(cellType CellType, streamStyle StreamStyle) StreamingCellMetadata {
+	return StreamingCellMetadata{cellType, streamStyle}
+}
+
+func (cm StreamingCellMetadata) Ptr() *StreamingCellMetadata {
+	return &cm
 }

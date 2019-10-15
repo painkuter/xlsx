@@ -5,51 +5,25 @@ import (
 	"strings"
 )
 
-type RelationshipType string
-
-const (
-	RelationshipTypeHyperlink RelationshipType = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
-)
-
-type RelationshipTargetMode string
-
-const (
-	RelationshipTargetModeExternal RelationshipTargetMode = "External"
-)
-
-// xlsxWorksheetRels contains xlsxWorksheetRelation
-type xlsxWorksheetRels struct {
-	XMLName       xml.Name                `xml:"http://schemas.openxmlformats.org/package/2006/relationships Relationships"`
-	Relationships []xlsxWorksheetRelation `xml:"Relationship"`
-}
-
-type xlsxWorksheetRelation struct {
-	Id         string                 `xml:"Id,attr"`
-	Type       RelationshipType       `xml:"Type,attr"`
-	Target     string                 `xml:"Target,attr"`
-	TargetMode RelationshipTargetMode `xml:"TargetMode,attr"`
-}
-
 // xlsxWorksheet directly maps the worksheet element in the namespace
 // http://schemas.openxmlformats.org/spreadsheetml/2006/main -
 // currently I have not checked it for completeness - it does as much
 // as I need.
 type xlsxWorksheet struct {
-	XMLName         xml.Name                 `xml:"http://schemas.openxmlformats.org/spreadsheetml/2006/main worksheet"`
-	SheetPr         xlsxSheetPr              `xml:"sheetPr"`
-	Dimension       xlsxDimension            `xml:"dimension"`
-	SheetViews      xlsxSheetViews           `xml:"sheetViews"`
-	SheetFormatPr   xlsxSheetFormatPr        `xml:"sheetFormatPr"`
-	Cols            *xlsxCols                `xml:"cols,omitempty"`
-	SheetData       xlsxSheetData            `xml:"sheetData"`
-	Hyperlinks      *xlsxHyperlinks          `xml:"hyperlinks,omitempty"`
-	AutoFilter      *xlsxAutoFilter          `xml:"autoFilter,omitempty"`
-	MergeCells      *xlsxMergeCells          `xml:"mergeCells,omitempty"`
-	DataValidations *xlsxCellDataValidations `xml:"dataValidations"`
-	PrintOptions    xlsxPrintOptions         `xml:"printOptions"`
-	PageMargins     xlsxPageMargins          `xml:"pageMargins"`
-	PageSetUp       xlsxPageSetUp            `xml:"pageSetup"`
-	HeaderFooter    xlsxHeaderFooter         `xml:"headerFooter"`
+	XMLName         xml.Name             `xml:"http://schemas.openxmlformats.org/spreadsheetml/2006/main worksheet"`
+	SheetPr         xlsxSheetPr          `xml:"sheetPr"`
+	Dimension       xlsxDimension        `xml:"dimension"`
+	SheetViews      xlsxSheetViews       `xml:"sheetViews"`
+	SheetFormatPr   xlsxSheetFormatPr    `xml:"sheetFormatPr"`
+	Cols            *xlsxCols            `xml:"cols,omitempty"`
+	SheetData       xlsxSheetData        `xml:"sheetData"`
+	DataValidations *xlsxDataValidations `xml:"dataValidations"`
+	AutoFilter      *xlsxAutoFilter      `xml:"autoFilter,omitempty"`
+	MergeCells      *xlsxMergeCells      `xml:"mergeCells,omitempty"`
+	PrintOptions    xlsxPrintOptions     `xml:"printOptions"`
+	PageMargins     xlsxPageMargins      `xml:"pageMargins"`
+	PageSetUp       xlsxPageSetUp        `xml:"pageSetup"`
+	HeaderFooter    xlsxHeaderFooter     `xml:"headerFooter"`
 }
 
 // xlsxHeaderFooter directly maps the headerFooter element in the namespace
@@ -231,6 +205,8 @@ type xlsxCol struct {
 	Width        float64 `xml:"width,attr"`
 	CustomWidth  bool    `xml:"customWidth,attr,omitempty"`
 	OutlineLevel uint8   `xml:"outlineLevel,attr,omitempty"`
+	BestFit      bool    `xml:"bestFit,attr,omitempty"`
+	Phonetic     bool    `xml:"phonetic,attr,omitempty"`
 }
 
 // xlsxDimension directly maps the dimension element in the namespace
@@ -250,16 +226,16 @@ type xlsxSheetData struct {
 	Row     []xlsxRow `xml:"row"`
 }
 
-// xlsxCellDataValidations  excel cell data validation
-type xlsxCellDataValidations struct {
-	DataValidation []*xlsxCellDataValidation `xml:"dataValidation"`
-	Count          int                       `xml:"count,attr"`
+// xlsxDataValidations  excel cell data validation
+type xlsxDataValidations struct {
+	DataValidation []*xlsxDataValidation `xml:"dataValidation"`
+	Count          int                   `xml:"count,attr"`
 }
 
-// xlsxCellDataValidation
+// xlsxDataValidation
 // A single item of data validation defined on a range of the worksheet.
 // The list validation type would more commonly be called "a drop down box."
-type xlsxCellDataValidation struct {
+type xlsxDataValidation struct {
 	// A boolean value indicating whether the data validation allows the use of empty or blank
 	//entries. 1 means empty entries are OK and do not violate the validation constraints.
 	AllowBlank bool `xml:"allowBlank,attr,omitempty"`
@@ -298,11 +274,6 @@ type xlsxCellDataValidation struct {
 	// The second formula in the DataValidation dropdown. It is used as a bounds for 'between' and
 	// 'notBetween' relational operators only.
 	Formula2 string `xml:"formula2,omitempty"`
-	// minRow and maxRow are zero indexed
-	minRow int //`xml:"-"`
-	maxRow int //`xml:"-"`
-	//minCol         int     `xml:"-"` //spare
-	//maxCol         int     `xml:"-"` //spare
 }
 
 // xlsxRow directly maps the row element in the namespace
@@ -333,17 +304,6 @@ type xlsxMergeCells struct {
 	Cells   []xlsxMergeCell `xml:"mergeCell,omitempty"`
 }
 
-type xlsxHyperlinks struct {
-	HyperLinks []xlsxHyperlink `xml:"hyperlink"`
-}
-
-type xlsxHyperlink struct {
-	RelationshipId string `xml:"id,attr"`
-	Reference      string `xml:"ref,attr"`
-	DisplayString  string `xml:"display,attr,omitempty"`
-	Tooltip        string `xml:"tooltip,attr,omitempty"`
-}
-
 // Return the cartesian extent of a merged cell range from its origin
 // cell (the closest merged cell to the to left of the sheet.
 func (mc *xlsxMergeCells) getExtent(cellRef string) (int, int, error) {
@@ -372,12 +332,13 @@ func (mc *xlsxMergeCells) getExtent(cellRef string) (int, int, error) {
 // currently I have not checked it for completeness - it does as much
 // as I need.
 type xlsxC struct {
-	R  string  `xml:"r,attr"`           // Cell ID, e.g. A1
-	S  int     `xml:"s,attr,omitempty"` // Style reference.
-	T  string  `xml:"t,attr,omitempty"` // Type.
-	F  *xlsxF  `xml:"f,omitempty"`      // Formula
-	V  string  `xml:"v,omitempty"`      // Value
-	Is *xlsxSI `xml:"is,omitempty"`     // Inline String.
+	XMLName xml.Name
+	R       string  `xml:"r,attr"`           // Cell ID, e.g. A1
+	S       int     `xml:"s,attr,omitempty"` // Style reference.
+	T       string  `xml:"t,attr,omitempty"` // Type.
+	F       *xlsxF  `xml:"f,omitempty"`      // Formula
+	V       string  `xml:"v,omitempty"`      // Value
+	Is      *xlsxSI `xml:"is,omitempty"`     // Inline String.
 }
 
 // xlsxF directly maps the f element in the namespace
