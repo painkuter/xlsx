@@ -1,8 +1,10 @@
 package xlsx
 
 import (
+	"encoding/xml"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 )
 
@@ -20,6 +22,7 @@ type Sheet struct {
 	SheetViews      []SheetView
 	SheetFormat     SheetFormat
 	AutoFilter      *AutoFilter
+	Relations       []Relation
 	DataValidations []*xlsxDataValidation
 }
 
@@ -45,6 +48,34 @@ type SheetFormat struct {
 type AutoFilter struct {
 	TopLeftCell     string
 	BottomRightCell string
+}
+
+type Relation struct {
+	Type       RelationshipType
+	Target     string
+	TargetMode RelationshipTargetMode
+}
+
+func (s *Sheet) makeXLSXSheetRelations() *xlsxWorksheetRels {
+	relSheet := xlsxWorksheetRels{XMLName: xml.Name{Local: "Relationships"}, Relationships: []xlsxWorksheetRelation{}}
+	for id, rel := range s.Relations {
+		xRel := xlsxWorksheetRelation{Id: "rId" + strconv.Itoa(id+1), Type: rel.Type, Target: rel.Target, TargetMode: rel.TargetMode}
+		relSheet.Relationships = append(relSheet.Relationships, xRel)
+	}
+	if len(relSheet.Relationships) == 0 {
+		return nil
+	}
+	return &relSheet
+}
+
+func (s *Sheet) addRelation(relType RelationshipType, target string, targetMode RelationshipTargetMode) {
+	newRel := Relation{Type: relType, Target: target, TargetMode: targetMode}
+	for _, rel := range s.Relations {
+		if rel == newRel {
+			return
+		}
+	}
+	s.Relations = append(s.Relations, newRel)
 }
 
 // Add a new Row to a Sheet
@@ -125,14 +156,14 @@ func (s *Sheet) Col(idx int) *Col {
 //
 // ... would set the variable "cell" to contain a Cell struct
 // containing the data from the field "A1" on the spreadsheet.
-func (sh *Sheet) Cell(row, col int) *Cell {
+func (s *Sheet) Cell(row, col int) *Cell {
 
 	// If the user requests a row beyond what we have, then extend.
-	for len(sh.Rows) <= row {
-		sh.AddRow()
+	for len(s.Rows) <= row {
+		s.AddRow()
 	}
 
-	r := sh.Rows[row]
+	r := s.Rows[row]
 	for len(r.Cells) <= col {
 		r.AddCell()
 	}
@@ -324,7 +355,7 @@ func (s *Sheet) makeCols(worksheet *xlsxWorksheet, styles *xlsxStyleSheet) (maxL
 	return maxLevelCol
 }
 
-func (s *Sheet) makeRows(worksheet *xlsxWorksheet, styles *xlsxStyleSheet, refTable *RefTable, maxLevelCol uint8) {
+func (s *Sheet) makeRows(worksheet *xlsxWorksheet, styles *xlsxStyleSheet, refTable *RefTable, maxLevelCol uint8, relations *xlsxWorksheetRels) {
 	maxRow := 0
 	maxCell := 0
 	var maxLevelRow uint8
@@ -416,6 +447,33 @@ func (s *Sheet) makeRows(worksheet *xlsxWorksheet, styles *xlsxStyleSheet, refTa
 				worksheet.DataValidations.Count = len(worksheet.DataValidations.DataValidation)
 			}
 
+			if cell.Hyperlink != (Hyperlink{}) {
+				if worksheet.Hyperlinks == nil {
+					worksheet.Hyperlinks = &xlsxHyperlinks{HyperLinks: []xlsxHyperlink{}}
+				}
+
+				var relId string
+				if len(relations.Relationships) == 0 {
+					log.Println("no hyperlink relationships are present in the xlsxWorksheetRels struct")
+				}
+				for _, rel := range relations.Relationships {
+					if rel.Target == cell.Hyperlink.Link {
+						relId = rel.Id
+					}
+				}
+
+				if relId == "" {
+					log.Println("the hyperlink in question could not be found in the xlsxWorksheetRels struct")
+				}
+
+				xlsxLink := xlsxHyperlink{
+					RelationshipId: relId,
+					Reference:      xC.R,
+					DisplayString:  cell.Hyperlink.DisplayString,
+					Tooltip:        cell.Hyperlink.Tooltip}
+				worksheet.Hyperlinks.HyperLinks = append(worksheet.Hyperlinks.HyperLinks, xlsxLink)
+			}
+
 			if cell.HMerge > 0 || cell.VMerge > 0 {
 				// r == rownum, c == colnum
 				mc := xlsxMergeCell{}
@@ -469,7 +527,7 @@ func (s *Sheet) makeDataValidations(worksheet *xlsxWorksheet) {
 }
 
 // Dump sheet to its XML representation, intended for internal use only
-func (s *Sheet) makeXLSXSheet(refTable *RefTable, styles *xlsxStyleSheet) *xlsxWorksheet {
+func (s *Sheet) makeXLSXSheet(refTable *RefTable, styles *xlsxStyleSheet, relations *xlsxWorksheetRels) (*xlsxWorksheet, error) {
 	worksheet := newXlsxWorksheet()
 
 	// Scan through the sheet and see if there are any merged cells. If there
@@ -481,9 +539,10 @@ func (s *Sheet) makeXLSXSheet(refTable *RefTable, styles *xlsxStyleSheet) *xlsxW
 	s.makeSheetFormatPr(worksheet)
 	maxLevelCol := s.makeCols(worksheet, styles)
 	s.makeDataValidations(worksheet)
-	s.makeRows(worksheet, styles, refTable, maxLevelCol)
 
-	return worksheet
+	s.makeRows(worksheet, styles, refTable, maxLevelCol, relations)
+
+	return worksheet, nil
 }
 
 func handleStyleForXLSX(style *Style, NumFmtId int, styles *xlsxStyleSheet) (XfId int) {
